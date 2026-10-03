@@ -1,166 +1,312 @@
 from __future__ import annotations
-import os
+
 import time
-import torch
-import torch.nn.functional as F
+from typing import Any, Dict, Optional
+
 from fastapi import HTTPException
 
-from app.core.graph import _graphs_from_csv
+from app.core.graph import PrometheusGraphProvider
+from app.core.interfaces import PolicyConfig, GraphWindow
 from app.core.model import TGATAutoscalerModel
-from config.settings import DEFAULT_MODEL_CFG, CONFIG, MODEL_PATH
-from app.dto.train_csv_request_dto import TrainCSVRequest
-from app.core.interfaces import PolicyConfig
 from app.core.safety import SafetyPolicy
-from app.core.graph import build_graph_from_prometheus
+from app.dto.train_csv_request_dto import TrainCSVRequest
+from config.settings import CONFIG, DEFAULT_MODEL_CFG, MODEL_OUTPUT_DIM, MODEL_PATH
 
 
 class TGATService:
-    def __init__(self):
-        self.model = TGATAutoscalerModel(DEFAULT_MODEL_CFG)
-
-    async def apply(self):
-    
-        gw = build_graph_from_prometheus(CONFIG)
-
-        builded_graph = self.model.build_graph_from_payload(gw)
-        actions = self.model.predict_graph(*builded_graph)
-        tstamp = gw.window
-
-        policy_cfg = PolicyConfig()
-        policy = SafetyPolicy(policy_cfg)
-        safe_actions = policy.filter(actions, tstamp)
-        report = policy.apply_to_k8s(safe_actions)
-  
-        return {'window': tstamp, 'applied': [a.model_dump() for a in safe_actions], 'report': report}
-
-    async def predict(self):
-        gw = build_graph_from_prometheus(CONFIG)
-    
-        x, edge_index, edge_attr = self.model.build_graph_from_payload(gw)
-
-        actions = self.model.predict_graph(x, edge_index, edge_attr)
-
-        return {'window': gw.window, 'actions': [a.model_dump() for a in actions]}
-
-    def ablate(self):
-        policy_cfg = PolicyConfig()
-        hysteresis_windows = policy_cfg.hysteresis_windows
-        time_encoding_enabled = self.model.time_encoding_enabled
-        dropedge_prob = self.model.dropedge_prob
-      
-        return {
-            'time_encoding': time_encoding_enabled,
-            'dropedge_prob': dropedge_prob,
-            'hysteresis_windows': hysteresis_windows
-        }
-
-
-    async def train_from_csv(self, req: TrainCSVRequest):
-        if MODEL_PATH is None:
-            raise HTTPException(status_code=400, detail="MODEL_PATH не задан (None)")
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        start = time.time()
-
-        # 1) Собираем датасет графов
-        try:
-            data = _graphs_from_csv(
-                self.model,
-                nodes_csv_path=req.nodes_csv_path,
-                edges_csv_path=req.edges_csv_path,
-                time_col=getattr(req, "time_column", getattr(req, "csv_time_column", "window_utc"))
-            )
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Ошибка парсинга CSV: {e}")
-
-        if not data:
-            raise HTTPException(status_code=400, detail="Датасет пустой после парсинга CSV")
-
-        # 2) Определяем размерности
-        try:
-            sample_x, sample_edge_index, sample_edge_attr, sample_y = data[0]
-            in_dim  = int(sample_x.shape[1])
-            edge_dim = int(sample_edge_attr.shape[1]) if sample_edge_attr is not None else 0
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Невозможно определить in_dim/edge_dim: {e}")
-
-        # 3) Инициализируем модель и берём внутреннюю нейросеть
-        self.model.init_model(in_dim, edge_dim)
-        torch_model = self.model.model.to(device)  # <-- ТУТ главное отличие
-        torch_model.train()
-
-        # 4) Оптимизатор по параметрам нейросети
-        opt = torch.optim.AdamW(
-            torch_model.parameters(),
-            lr=req.learning_rate,
-            weight_decay=req.weight_decay
+    def __init__(self, model=None, graph_provider=None, policy_factory=None):
+        self.safety_enabled = True
+        self.model = (
+            model if model is not None else TGATAutoscalerModel(DEFAULT_MODEL_CFG)
+        )
+        self.graph_provider = graph_provider or PrometheusGraphProvider(CONFIG)
+        self.policy_factory = policy_factory or (
+            lambda: SafetyPolicy(self._build_policy_config())
         )
 
-        # 5) Красивые логи
-        print("=" * 80)
-        print("[train_csv] TGAT-Autoscaler — CSV training")
-        print(f"[train_csv] nodes_csv: {req.nodes_csv_path}")
-        print(f"[train_csv] edges_csv: {req.edges_csv_path or '(none)'}")
-        print(f"[train_csv] time_col: {getattr(req, 'time_column', getattr(req, 'csv_time_column', 'window_utc'))} | samples: {len(data)}")
-        print(f"[train_csv] dims: in_dim={in_dim}, edge_dim={edge_dim}, out_dim=3")
-        print(f"[train_csv] device: {device.type} | epochs: {req.epochs} | lr={req.learning_rate} | wd={req.weight_decay}")
-        print("=" * 80)
+    # =========================================================================
+    # CONFIGURATION
+    # =========================================================================
 
-        # 6) Тренировка
-        best_loss = float("inf")
-        last_epoch_loss = None
+    @staticmethod
+    def _build_policy_config() -> PolicyConfig:
+        safety = CONFIG.get("safety", {})
 
-        for ep in range(1, req.epochs + 1):
-            running = 0.0
-            steps = 0
-            t0 = time.time()
+        objective = CONFIG.get("objective", {})
 
-            for x, edge_index, edge_attr, y in data:
-                x = x.to(device)
-                y = y.to(device)
-                if edge_index is not None:
-                    edge_index = edge_index.to(device)
-                if edge_attr is not None:
-                    edge_attr = edge_attr.to(device)
+        return PolicyConfig(
+            hysteresis_windows=int(safety.get("hysteresis_windows", 2)),
+            rate_limit_replicas=int(safety.get("rate_limit_replicas", 2)),
+            cpu_step_pct=float(safety.get("cpu_step_pct", 0.20)),
+            mem_step_pct=float(safety.get("mem_step_pct", 0.20)),
+            cooldown_sec=int(safety.get("cooldown_sec", 600)),
+            smoothing_alpha=float(safety.get("smoothing_alpha", 0.60)),
+            r_min=int(safety.get("r_min", 1)),
+            r_max=int(safety.get("r_max", 50)),
+            lambda_slo=float(objective.get("lambda_slo", 0.35)),
+            lambda_cost=float(objective.get("lambda_cost", 0.25)),
+            lambda_stability=float(objective.get("lambda_stability", 0.20)),
+            lambda_risk=float(objective.get("lambda_risk", 0.20)),
+            critical_slo_risk=float(safety.get("critical_slo_risk", 0.90)),
+            dry_run=bool(safety.get("dry_run", True)),
+        )
 
-                opt.zero_grad(set_to_none=True)
-                pred = torch_model(x, edge_index, edge_attr)  # <-- вызыаем НЕ self.model, а именно torch_model
-                loss = F.smooth_l1_loss(pred, y)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(torch_model.parameters(), 1.0)
-                opt.step()
+    # =========================================================================
+    # PREDICTION
+    # =========================================================================
 
-                running += float(loss.item())
-                steps += 1
+    async def predict(
+        self, graph_window: Optional[GraphWindow] = None
+    ) -> Dict[str, Any]:
+        """
+        Forecast only.
 
-            last_epoch_loss = running / max(1, steps)
-            elapsed = time.time() - t0
-            best_loss = min(best_loss, last_epoch_loss)
-            print(f"[epoch {ep:03d}/{req.epochs}] loss={last_epoch_loss:.6f} (best={best_loss:.6f}) | steps={steps} | {elapsed:.2f}s")
+        No safety filtering and no Kubernetes mutation are performed.
+        """
 
-        # 7) Сохранение (включая размерности — это важно для predict/ensure_ready)
-        os.makedirs(os.path.dirname(MODEL_PATH) or ".", exist_ok=True)
-        torch.save({
-            "model": torch_model.state_dict(),
-            "cfg": self.model.cfg,
-            "in_dim": in_dim,
-            "edge_dim": edge_dim
-        }, MODEL_PATH)
+        started = time.perf_counter()
 
-        total_time = time.time() - start
-        print("-" * 80)
-        print(f"[train_csv] DONE | saved to: {MODEL_PATH} | total_time: {total_time:.2f}s")
-        print("-" * 80)
+        graph_window = (
+            graph_window if graph_window is not None else self.graph_provider()
+        )
+
+        graph_started = time.perf_counter()
+
+        x, edge_index, edge_attr = self.model.build_graph_from_payload(graph_window)
+
+        graph_ms = (time.perf_counter() - graph_started) * 1000.0
+
+        inference_started = time.perf_counter()
+
+        predictions = self.model.predict_targets(x, edge_index, edge_attr)
+
+        inference_ms = (time.perf_counter() - inference_started) * 1000.0
+
+        proposed_actions = self.model.predictions_to_actions(predictions)
+
+        total_ms = (time.perf_counter() - started) * 1000.0
 
         return {
-            "status": "ok",
-            "model_path": MODEL_PATH,
-            "samples": len(data),
-            "epochs": req.epochs,
-            "last_epoch_loss": last_epoch_loss,
-            "best_loss": best_loss,
-            "device": device.type,
-            "in_dim": in_dim,
-            "edge_dim": edge_dim,
-            "train_time_sec": round(total_time, 3),
+            "window": graph_window.window,
+            "predictions": [prediction.model_dump() for prediction in predictions],
+            "proposed_actions": [action.model_dump() for action in proposed_actions],
+            "hidden_edges": self.model.get_last_hidden_edges(),
+            "ablation": self.model.ablation_state(),
+            "profiling": {
+                "graph_build_ms": round(graph_ms, 3),
+                "inference_ms": round(inference_ms, 3),
+                "total_ms": round(total_ms, 3),
+            },
         }
+
+    # =========================================================================
+    # APPLY
+    # =========================================================================
+
+    async def apply(self, graph_window: Optional[GraphWindow] = None) -> Dict[str, Any]:
+        """
+        Complete telemetry -> prediction -> decision -> safety -> K8s loop.
+        """
+
+        total_started = time.perf_counter()
+
+        # ---------------------------------------------------------------------
+        # Telemetry / graph
+        # ---------------------------------------------------------------------
+        collection_started = time.perf_counter()
+
+        graph_window = (
+            graph_window if graph_window is not None else self.graph_provider()
+        )
+
+        collection_ms = (time.perf_counter() - collection_started) * 1000.0
+
+        graph_started = time.perf_counter()
+
+        x, edge_index, edge_attr = self.model.build_graph_from_payload(graph_window)
+
+        graph_ms = (time.perf_counter() - graph_started) * 1000.0
+
+        # ---------------------------------------------------------------------
+        # Neural forecasting
+        # ---------------------------------------------------------------------
+        inference_started = time.perf_counter()
+
+        predictions = self.model.predict_targets(x, edge_index, edge_attr)
+
+        inference_ms = (time.perf_counter() - inference_started) * 1000.0
+
+        proposed_actions = self.model.predictions_to_actions(predictions)
+
+        # ---------------------------------------------------------------------
+        # Multi-objective decision + operational safety layer
+        # ---------------------------------------------------------------------
+        decision_started = time.perf_counter()
+
+        policy = self.policy_factory()
+        import copy
+
+        before_state = copy.deepcopy(policy.state)
+        from app.core.interfaces import Action
+        from app.utils.parsers import format_cpu_milli, format_mem_gi_from_mib
+
+        for node in graph_window.nodes:
+            meta = node.meta or {}
+            previous = policy.state.get("last_actions", {}).get(node.id, {})
+            # Horizontal constraints begin from observed replicas on the first cycle.
+            # Usage telemetry must never be mistaken for allocated per-pod resources.
+            allocation = Action(
+                id=node.id,
+                replicas=max(1, int(round(node.x[-1]))),
+                cpu=(
+                    format_cpu_milli(meta["cpu_request_m"])
+                    if "cpu_request_m" in meta
+                    else previous.get("cpu")
+                ),
+                mem=(
+                    format_mem_gi_from_mib(meta["mem_request_mib"])
+                    if "mem_request_mib" in meta
+                    else previous.get("mem")
+                ),
+            )
+            policy.state.setdefault("last_actions", {})[node.id] = (
+                allocation.model_dump(exclude={"id"})
+            )
+
+        if self.safety_enabled:
+            selected_actions = policy.select_actions(predictions, proposed_actions)
+            safe_actions = policy.filter(
+                selected_actions,
+                graph_window.window,
+                predictions=predictions,
+                persist=False,
+            )
+        else:
+            # Ablation removes operational stabilization; service bounds remain enforced.
+            selected_actions = safe_actions = proposed_actions
+            policy.state["last_window"] = graph_window.window
+            policy.state["last_actions"] = {
+                a.id: a.model_dump(exclude={"id"}) for a in safe_actions
+            }
+
+        decision_ms = (time.perf_counter() - decision_started) * 1000.0
+
+        # ---------------------------------------------------------------------
+        # Kubernetes actuation
+        # ---------------------------------------------------------------------
+        actuation_started = time.perf_counter()
+
+        try:
+            report = policy.apply_to_k8s(safe_actions)
+        except Exception:
+            policy.state = before_state
+            raise
+        if not report.get("dry_run", False):
+            successful = set(report.get("patched", []))
+            # Failed or partially applied patches must not be recorded as completed.
+            for action in safe_actions:
+                if action.id not in successful:
+                    for key in (
+                        "last_actions",
+                        "last_action_ts",
+                        "hysteresis",
+                        "hysteresis_signatures",
+                    ):
+                        prior = before_state.get(key, {})
+                        if action.id in prior:
+                            policy.state.setdefault(key, {})[action.id] = prior[
+                                action.id
+                            ]
+                        else:
+                            policy.state.get(key, {}).pop(action.id, None)
+        if not report.get("dry_run", False) and not report.get("patched"):
+            # A wholly failed window remains retryable and cannot advance the control clock.
+            policy.state = before_state
+        policy._save_state()
+
+        actuation_ms = (time.perf_counter() - actuation_started) * 1000.0
+
+        total_ms = (time.perf_counter() - total_started) * 1000.0
+
+        control_period_ms = float(CONFIG.get("metrics_interval", 300)) * 1000.0
+
+        occupancy_pct = (
+            (total_ms / control_period_ms) * 100.0 if control_period_ms > 0.0 else 0.0
+        )
+
+        return {
+            "window": graph_window.window,
+            "predictions": [prediction.model_dump() for prediction in predictions],
+            "proposed_actions": [action.model_dump() for action in proposed_actions],
+            "selected_actions": [action.model_dump() for action in selected_actions],
+            "applied": [
+                action.model_dump()
+                for action in safe_actions
+                if report.get("dry_run") or action.id in report.get("patched", [])
+            ],
+            "hidden_edges": self.model.get_last_hidden_edges(),
+            "report": report,
+            "profiling": {
+                "telemetry_ms": round(collection_ms, 3),
+                "graph_build_ms": round(graph_ms, 3),
+                "inference_ms": round(inference_ms, 3),
+                "decision_ms": round(decision_ms, 3),
+                "actuation_ms": round(actuation_ms, 3),
+                "total_ms": round(total_ms, 3),
+                "control_interval_occupancy_pct": round(occupancy_pct, 6),
+            },
+            "ablation": self.model.ablation_state(),
+        }
+
+    # =========================================================================
+    # ABLATIONS
+    # =========================================================================
+
+    def ablate(
+        self,
+        *,
+        time_encoding: Optional[bool] = None,
+        hidden_edges: Optional[bool] = None,
+        graph_enabled: Optional[bool] = None,
+        dropedge_prob: Optional[float] = None,
+        history_minutes: Optional[int] = None,
+        safety_enabled: Optional[bool] = None,
+        hysteresis_enabled: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        if dropedge_prob is not None and not 0 <= dropedge_prob <= 1:
+            raise ValueError("dropedge_prob must be in [0, 1]")
+        if history_minutes is not None:
+            if history_minutes <= 0:
+                raise ValueError("history_minutes " "must be > 0")
+
+            CONFIG["observation_window_minutes"] = int(history_minutes)
+
+            CONFIG["edge_feature_window_sec"] = int(history_minutes * 60)
+
+        state = self.model.configure_ablation(
+            time_encoding=(time_encoding),
+            hidden_edges=(hidden_edges),
+            graph_enabled=(graph_enabled),
+            dropedge_prob=(dropedge_prob),
+        )
+
+        if safety_enabled is not None:
+            self.safety_enabled = safety_enabled
+        if hysteresis_enabled is not None:
+            CONFIG["safety"]["hysteresis_windows"] = 2 if hysteresis_enabled else 0
+        state["safety_enabled"] = self.safety_enabled
+        state["history_minutes"] = CONFIG.get("observation_window_minutes", 60)
+
+        return state
+
+    # =========================================================================
+    # TRAINING
+    # =========================================================================
+
+    async def train_from_csv(self, req: TrainCSVRequest) -> Dict[str, Any]:
+        from app.training.trainer import CSVTrainer
+
+        try:
+            return CSVTrainer(self.model).train(req)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -1,0 +1,19 @@
+{
+  "status": "ok",
+  "model_path": "artifacts\\synthetic_2months.pt",
+  "samples": 17567,
+  "training_samples": 14052,
+  "validation_samples": 3514,
+  "validation_start": "2026-09-18T19:05:00+00:00",
+  "epochs": 5,
+  "last_epoch_loss": 0.0077099578243426305,
+  "last_regression_loss": 0.00720762645995075,
+  "last_risk_loss": 0.0007781579628830182,
+  "best_loss": 0.0047686522229965275,
+  "device": "cpu",
+  "in_dim": 8,
+  "edge_dim": 12,
+  "output_dim": 7,
+  "seed": 42,
+  "train_time_sec": 29.917
+}

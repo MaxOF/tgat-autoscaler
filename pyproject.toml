@@ -1,0 +1,7 @@
+[tool.black]
+line-length = 88
+skip-magic-trailing-comma = true
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

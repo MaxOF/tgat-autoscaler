@@ -3,11 +3,15 @@ import math
 import torch.nn as nn
 from typing import List
 
+
 class TemporalFourierEncoding(nn.Module):
     def __init__(self, periods_min: List[float]):
         super().__init__()
-        self.periods = torch.tensor(periods_min, dtype=torch.float32)
+        if not periods_min or any(not math.isfinite(p) or p <= 0 for p in periods_min):
+            raise ValueError("Fourier periods must be positive and finite")
+        self.register_buffer("periods", torch.tensor(periods_min, dtype=torch.float32))
         self.out_dim = 2 * len(periods_min)
+
     def forward(self, delta_minutes: torch.Tensor) -> torch.Tensor:
         if delta_minutes.ndim == 1:
             delta_minutes = delta_minutes.unsqueeze(1)

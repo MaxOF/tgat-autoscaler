@@ -1,0 +1,90 @@
+{
+  "mode": "open_loop_csv_replay",
+  "provenance": "synthetic_telemetry",
+  "kubernetes_mutations": 0,
+  "evaluation_start": "2026-09-18T19:05:00+00:00",
+  "windows": 3514,
+  "forecast_rows": 10542,
+  "regression": {
+    "rps_next": {
+      "mae": 0.9795673199745718,
+      "rmse": 2.513301787450122
+    },
+    "replicas_next": {
+      "mae": 0.03402018404576883,
+      "rmse": 0.06838159274647218
+    },
+    "cpu_mcores_next": {
+      "mae": 34.11003244798429,
+      "rmse": 65.31421246897834
+    },
+    "mem_mib_next": {
+      "mae": 18.190497580571503,
+      "rmse": 21.023416227335996
+    },
+    "p95_ms_next": {
+      "mae": 8.465592350504743,
+      "rmse": 10.884251073720415
+    },
+    "p99_ms_next": {
+      "mae": 15.069540821698558,
+      "rmse": 19.12693562836229
+    }
+  },
+  "risk_brier": 0.00018950955259627186,
+  "risk_classification": {
+    "tp": 0,
+    "fp": 0,
+    "fn": 2,
+    "positive": 2,
+    "negative": 10540,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0
+  },
+  "hidden_edge_reconstruction": {
+    "tp": 959,
+    "fp": 0,
+    "fn": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0
+  },
+  "persistence_baseline": {
+    "rps_next": {
+      "mae": 0.8406201516055612,
+      "rmse": 2.5372114425578314
+    },
+    "replicas_next": {
+      "mae": 0.005501802314551318,
+      "rmse": 0.07417413507787818
+    },
+    "cpu_mcores_next": {
+      "mae": 20.921444797501785,
+      "rmse": 58.94836478337263
+    },
+    "mem_mib_next": {
+      "mae": 0.7172029977534056,
+      "rmse": 2.18151261462211
+    },
+    "p95_ms_next": {
+      "mae": 9.039925145143394,
+      "rmse": 11.53140655032442
+    },
+    "p99_ms_next": {
+      "mae": 17.68425405086178,
+      "rmse": 22.387955257901456
+    }
+  },
+  "includes_training_period": false,
+  "proposed_safe_changes": 2347,
+  "controller_ms": {
+    "mean": 3.3346501423001467,
+    "p95": 4.2919750023429515
+  },
+  "limitations": [
+    "Actions do not change recorded telemetry; this measures forecasting and control decisions.",
+    "Validation data select checkpoints and are not an independent final test set.",
+    "Measured SLO improvement, recovery and billing require a closed-loop application experiment."
+  ]
+}

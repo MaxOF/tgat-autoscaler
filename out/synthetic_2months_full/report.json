@@ -1,0 +1,90 @@
+{
+  "mode": "open_loop_csv_replay",
+  "provenance": "synthetic_telemetry",
+  "kubernetes_mutations": 0,
+  "evaluation_start": "2026-08-01T00:00:00+00:00",
+  "windows": 17567,
+  "forecast_rows": 52701,
+  "regression": {
+    "rps_next": {
+      "mae": 0.9937748961474818,
+      "rmse": 2.0544918815199256
+    },
+    "replicas_next": {
+      "mae": 0.03070011159228712,
+      "rmse": 0.054241444900176135
+    },
+    "cpu_mcores_next": {
+      "mae": 35.464891710909484,
+      "rmse": 58.36063836775635
+    },
+    "mem_mib_next": {
+      "mae": 18.065749845564298,
+      "rmse": 20.52493193904675
+    },
+    "p95_ms_next": {
+      "mae": 8.667959433774003,
+      "rmse": 11.028545898477699
+    },
+    "p99_ms_next": {
+      "mae": 15.028682684202135,
+      "rmse": 18.92303730745349
+    }
+  },
+  "risk_brier": 9.473794818398188e-05,
+  "risk_classification": {
+    "tp": 0,
+    "fp": 0,
+    "fn": 5,
+    "positive": 5,
+    "negative": 52696,
+    "precision": 0.0,
+    "recall": 0.0,
+    "f1": 0.0
+  },
+  "hidden_edge_reconstruction": {
+    "tp": 1593,
+    "fp": 0,
+    "fn": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0
+  },
+  "persistence_baseline": {
+    "rps_next": {
+      "mae": 0.8021323212144317,
+      "rmse": 1.9593419495311355
+    },
+    "replicas_next": {
+      "mae": 0.0030739454659304377,
+      "rmse": 0.05544317330321595
+    },
+    "cpu_mcores_next": {
+      "mae": 22.122353658842144,
+      "rmse": 49.63706252201254
+    },
+    "mem_mib_next": {
+      "mae": 0.6830180244342043,
+      "rmse": 1.678044499153979
+    },
+    "p95_ms_next": {
+      "mae": 9.103758031231722,
+      "rmse": 11.524449509566582
+    },
+    "p99_ms_next": {
+      "mae": 17.805733906118945,
+      "rmse": 22.447888780160625
+    }
+  },
+  "includes_training_period": true,
+  "proposed_safe_changes": 11273,
+  "controller_ms": {
+    "mean": 2.859635259256367,
+    "p95": 4.041719998349436
+  },
+  "limitations": [
+    "Actions do not change recorded telemetry; this measures forecasting and control decisions.",
+    "Validation data select checkpoints and are not an independent final test set.",
+    "Measured SLO improvement, recovery and billing require a closed-loop application experiment."
+  ]
+}

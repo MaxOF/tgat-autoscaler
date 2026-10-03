@@ -2,10 +2,12 @@ from fastapi import FastAPI
 from app.controller.tgat_controller import router as tgat_router
 import uvicorn
 
+
 def create_app() -> FastAPI:
     app = FastAPI(title="TGAT-Autoscaler", version="1.0.0")
     app.include_router(tgat_router)
     return app
+
 
 app = create_app()
 

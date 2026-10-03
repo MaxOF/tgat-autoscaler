@@ -1,0 +1,30 @@
+{
+  "schema_version": 2,
+  "provenance": "synthetic_telemetry",
+  "start_inclusive": "2026-08-01T00:00:00+00:00",
+  "end_exclusive": "2026-10-01T00:00:00+00:00",
+  "seed": 42,
+  "step_minutes": 5,
+  "windows": 17568,
+  "services": [
+    "orders-service",
+    "products-service",
+    "payments-service"
+  ],
+  "scenario_protocol": "repeat original 30-day blocks; final block may be truncated",
+  "missing_edge_rate": 0.3,
+  "mask_protocol": "independent 2-hour blocks; independent RNG from telemetry",
+  "actual_partial_missing_rate": 0.2916666666666667,
+  "rows": {
+    "nodes.csv": 52704,
+    "edges.csv": 32784,
+    "edges_ground_truth.csv": 35136,
+    "scenarios.csv": 17568
+  },
+  "sha256": {
+    "nodes.csv": "cb14653574e35591690faa4a81867a699968c7a4c4ab1c880fd00807768c7a1e",
+    "edges.csv": "ff27b38fe3dc046dc39597feef9809087f33281bae023220ab0a86d301225a8a",
+    "edges_ground_truth.csv": "82c7cbe322389a3fa57b5b810eca55f5a998ac64caee6f0f75c58d80edd8569a",
+    "scenarios.csv": "aca448216fdf1faff203c2c9b70506172e04bb48970d6b982d89acc6fcdbf4a1"
+  }
+}
